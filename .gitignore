@@ -1,0 +1,15 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# scratch / local audit corpus
+/scratch
+/corpus
+*.local
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
