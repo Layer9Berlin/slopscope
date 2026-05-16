@@ -63,7 +63,9 @@ fn tag(sev: Severity) -> &'static str {
 
 fn bucket(cat: Category) -> &'static str {
     match cat {
-        Category::VcsHygiene => "A:vcs-hygiene",
-        Category::SteeringFailure => "B:steering-failure",
+        Category::VcsHygiene => "vcs-hygiene",
+        Category::SteeringFailure => "steering-failure",
+        Category::Inconsistency => "inconsistency",
+        Category::Verification => "verification",
     }
 }

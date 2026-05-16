@@ -214,7 +214,7 @@ mod tests {
     fn is_generated_or_fixture_keeps_real_source() {
         for p in [
             "src/main.rs",
-            "src/audit/bucket_b/churn_hotspots.rs",
+            "src/audit/steering_failure/churn_hotspots.rs",
             "lib/auth.ts",
             "cmd/server/main.go",
             "Cargo.toml", // manifest, not lockfile

@@ -1,5 +1,7 @@
-pub mod bucket_a;
-pub mod bucket_b;
+pub mod inconsistency;
+pub mod steering_failure;
+pub mod vcs_hygiene;
+pub mod verification;
 pub(crate) mod util;
 
 use crate::finding::{Finding, Severity};
@@ -54,8 +56,10 @@ pub fn run(root: &Path) -> Result<AuditReport> {
     };
 
     let mut findings = Vec::new();
-    findings.extend(bucket_a::check(&ctx));
-    findings.extend(bucket_b::check(&ctx));
+    findings.extend(vcs_hygiene::check(&ctx));
+    findings.extend(steering_failure::check(&ctx));
+    findings.extend(inconsistency::check(&ctx));
+    findings.extend(verification::check(&ctx));
 
     // Stable ordering: severity desc, then category, then check id.
     findings.sort_by(|a, b| {

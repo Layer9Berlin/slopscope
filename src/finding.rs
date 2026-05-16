@@ -9,14 +9,23 @@ pub enum Severity {
     Critical,
 }
 
-/// Which detection bucket a finding belongs to.
+/// Which category a finding belongs to. Categories are themed by what they
+/// diagnose, not lettered by spec order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Category {
-    /// Bucket A — committed files that should never have been committed.
+    /// Committed files that should never have been committed (secrets,
+    /// build output, accidental shell-fragment filenames).
     VcsHygiene,
-    /// Bucket B — git-history signature of an agent that couldn't be steered.
+    /// Git-history signature of an agent that couldn't be steered (churn
+    /// loops, ping-ponging content, dump-commits, narration-doc piles).
     SteeringFailure,
+    /// Pile-up of tools doing the same job — `eslint` + `biome`, two HTTP
+    /// clients, two state libraries. Agent indecision frozen into deps.
+    Inconsistency,
+    /// Whether the repo has tests, a CI gate, a typecheck step — the
+    /// scaffolding that makes a project verifiable at all.
+    Verification,
 }
 
 /// A single deterministic finding. `evidence` is the ground truth — file
