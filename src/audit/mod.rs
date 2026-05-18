@@ -1,3 +1,4 @@
+pub mod complexity;
 pub mod inconsistency;
 pub mod steering_failure;
 pub mod vcs_hygiene;
@@ -60,6 +61,7 @@ pub fn run(root: &Path) -> Result<AuditReport> {
     findings.extend(steering_failure::check(&ctx));
     findings.extend(inconsistency::check(&ctx));
     findings.extend(verification::check(&ctx));
+    findings.extend(complexity::check(&ctx));
 
     // Stable ordering: severity desc, then category, then check id.
     findings.sort_by(|a, b| {

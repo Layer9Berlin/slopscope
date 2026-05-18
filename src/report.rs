@@ -67,5 +67,6 @@ fn bucket(cat: Category) -> &'static str {
         Category::SteeringFailure => "steering-failure",
         Category::Inconsistency => "inconsistency",
         Category::Verification => "verification",
+        Category::Complexity => "complexity",
     }
 }

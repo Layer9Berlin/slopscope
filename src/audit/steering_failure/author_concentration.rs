@@ -1,13 +1,13 @@
 //! Signal: author concentration — context, not a verdict.
 //!
-//! Every other bucket-B signal assumes a *solo-driver* repo: one person (or
+//! Every other steering-failure signal assumes a *solo-driver* repo: one person (or
 //! one person + one agent) steering. That assumption is what lets us read
 //! churn loops and reverted content as "the agent couldn't be steered". In a
 //! repo with dozens of contributors, the same patterns can be ordinary
 //! distributed development — merges, parallel work, reverts across teams.
 //!
 //! So this signal never flags slop. It reports *how concentrated* authorship
-//! is, so a reader knows whether to trust the rest of bucket B at face value
+//! is, so a reader knows whether to trust the rest of steering-failure at face value
 //! or treat it as lower-confidence. Solo-driver repos produce no finding —
 //! they need no caveat; the default assumption already holds.
 
@@ -23,7 +23,7 @@ use std::collections::HashMap;
 /// extremely common "one maintainer + hundreds of drive-by PRs" OSS shape from
 /// reading as multi-author.
 const MIN_SUBSTANTIAL_COMMITS: usize = 10;
-/// At or above this many *substantial* authors, bucket B's solo-driver
+/// At or above this many *substantial* authors, steering-failure's solo-driver
 /// assumption is worth caveating.
 const MULTI_AUTHOR_THRESHOLD: usize = 5;
 /// ...unless one author still dominates this share of all commits — then it is
@@ -81,8 +81,8 @@ fn author_concentration(commits: &[Commit]) -> Option<Finding> {
         Severity::Info,
         format!(
             "{substantial} substantial contributors (>= {MIN_SUBSTANTIAL_COMMITS} commits), \
-             top at {}% of commits — bucket B signals assume a solo-driver repo, \
-             so treat them as lower-confidence here",
+             top at {}% of commits — steering-failure signals assume a solo-driver \
+             repo, so treat them as lower-confidence here",
             (top_share * 100.0).round() as u32
         ),
         evidence,

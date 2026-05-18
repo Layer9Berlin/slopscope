@@ -82,7 +82,7 @@ fn mega_commits(commits: &[Commit], tracked: usize) -> Option<Finding> {
         .filter_map(|c| {
             // Count only hand-authored files — a commit that vendors
             // node_modules touches thousands of files but that is a .gitignore
-            // failure (bucket A territory), not a mega-commit of *code*.
+            // failure (vcs-hygiene territory), not a mega-commit of *code*.
             let hand: Vec<_> = c
                 .files
                 .iter()

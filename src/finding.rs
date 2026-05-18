@@ -26,6 +26,11 @@ pub enum Category {
     /// Whether the repo has tests, a CI gate, a typecheck step — the
     /// scaffolding that makes a project verifiable at all.
     Verification,
+    /// Structural complexity an agent kept piling onto instead of factoring
+    /// out — god files that grow without refactor. Not generic LOC opinions:
+    /// cross-referenced against recent git activity so only *living* big
+    /// files are flagged.
+    Complexity,
 }
 
 /// A single deterministic finding. `evidence` is the ground truth — file

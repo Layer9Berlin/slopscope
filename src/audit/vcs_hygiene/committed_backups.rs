@@ -19,7 +19,7 @@ fn committed_backups_and_logs(tracked: &[String]) -> Vec<Finding> {
             continue;
         }
         let name = basename(path).to_ascii_lowercase();
-        // Extension-based only: `backup_*` prefixes are handled by bucket B's
+        // Extension-based only: `backup_*` prefixes are handled by steering-failure's
         // rollback-artifacts check, where the date/extension guard avoids
         // false-positiving on legit files like Android's backup_rules.xml.
         let is_backup = name.ends_with(".bak")
@@ -86,11 +86,11 @@ mod tests {
         // Regression: backup_rules.xml is legit Android config, not a backup.
         let f = committed_backups_and_logs(&files(&[
             "android/app/src/main/res/xml/backup_rules.xml",
-            "backup_20251127.sql", // backup_ prefix, but bucket A is extension-only
+            "backup_20251127.sql", // backup_ prefix, but vcs-hygiene is extension-only
         ]));
         assert!(
             f.iter().all(|x| x.check != "committed-backup-files"),
-            "bucket A must not flag backup_-prefixed files"
+            "vcs-hygiene must not flag backup_-prefixed files"
         );
     }
 

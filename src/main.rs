@@ -16,7 +16,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Full-repo audit: VCS hygiene (bucket A) + steering-failure signature (bucket B).
+    /// Full-repo audit across vcs-hygiene, steering-failure, inconsistency, and verification signals.
     Audit {
         /// Path to the repository (defaults to current directory).
         #[arg(default_value = ".")]
