@@ -31,6 +31,11 @@ pub enum Category {
     /// cross-referenced against recent git activity so only *living* big
     /// files are flagged.
     Complexity,
+    /// Places the agent gave up or hand-waved — suppressed type/lint checks,
+    /// `NotImplemented` stubs, swallowed errors, dead `if (false)` gates,
+    /// AI-narrator comments left in code. The "got it working" without
+    /// actually solving the problem signature.
+    CodeSmell,
 }
 
 /// A single deterministic finding. `evidence` is the ground truth — file

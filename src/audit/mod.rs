@@ -1,5 +1,7 @@
+pub mod code_smell;
 pub mod complexity;
 pub mod inconsistency;
+pub mod source;
 pub mod steering_failure;
 pub mod vcs_hygiene;
 pub mod verification;
@@ -9,6 +11,7 @@ use crate::finding::{Finding, Severity};
 use crate::git::{self, Commit};
 use anyhow::{bail, Result};
 use serde::Serialize;
+use source::SourceFile;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +27,11 @@ pub struct AuditContext {
     /// Per-path sequence of content blob hashes, oldest first — a recurring
     /// hash means the file returned to an exact prior content state.
     pub blob_history: HashMap<String, Vec<String>>,
+    /// Recognized-source tracked files, loaded into memory. The substrate
+    /// every content-scanning signal (suppressed checks, stub returns,
+    /// swallowed errors, narrator comments, …) walks. Filtered to exclude
+    /// generated/vendored/oversize/binary; see [`source::load_all`].
+    pub source_files: Vec<SourceFile>,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,11 +57,14 @@ pub fn run(root: &Path) -> Result<AuditReport> {
         );
     }
 
+    let tracked = git::tracked_files(root)?;
+    let source_files = source::load_all(root, &tracked);
     let ctx = AuditContext {
         root: root.to_path_buf(),
-        tracked: git::tracked_files(root)?,
+        tracked,
         commits: git::commit_log(root)?,
         blob_history: git::blob_history(root)?,
+        source_files,
     };
 
     let mut findings = Vec::new();
@@ -62,6 +73,7 @@ pub fn run(root: &Path) -> Result<AuditReport> {
     findings.extend(inconsistency::check(&ctx));
     findings.extend(verification::check(&ctx));
     findings.extend(complexity::check(&ctx));
+    findings.extend(code_smell::check(&ctx));
 
     // Stable ordering: severity desc, then category, then check id.
     findings.sort_by(|a, b| {
