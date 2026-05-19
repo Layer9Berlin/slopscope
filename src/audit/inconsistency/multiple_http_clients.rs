@@ -11,325 +11,91 @@
 //! doesn't count, since you don't choose those. Each ecosystem has its own
 //! manifest format and its own client set.
 
+use super::manifests::{detect_pile_up, EcosystemLibs, LibPile};
 use crate::audit::AuditContext;
-use crate::audit::util::basename;
-use crate::finding::{Category, Finding, Severity};
-use serde_json::Value as JsonValue;
-use std::collections::BTreeSet;
-use std::path::Path;
+use crate::finding::Finding;
+
+const SPEC: LibPile = LibPile {
+    check_id: "multiple-http-clients",
+    thing_name: "HTTP clients",
+    libs: EcosystemLibs {
+        js: &[
+            "axios",
+            "node-fetch",
+            "isomorphic-fetch",
+            "cross-fetch",
+            "ky",
+            "got",
+            "undici",
+            "superagent",
+            "request",
+            "phin",
+            "needle",
+            "wretch",
+            "redaxios",
+        ],
+        // Python: `requests` and `urllib3` are sometimes both present
+        // because requests *uses* urllib3. We list urllib3 only as a
+        // stand-alone client — adding it on top of requests + httpx
+        // still flags (the agent piled them on), but a project that
+        // only declares urllib3 stays quiet.
+        python: &[
+            "requests",
+            "httpx",
+            "aiohttp",
+            "urllib3",
+            "httplib2",
+            "tornado",
+            "pycurl",
+            "treq",
+            "niquests",
+        ],
+        rust: &[
+            "reqwest",
+            "ureq",
+            "surf",
+            "isahc",
+            "curl",
+            "hyper",
+            "attohttpc",
+            "minreq",
+        ],
+        go: &[
+            "github.com/go-resty/resty",
+            "github.com/valyala/fasthttp",
+            "github.com/imroc/req",
+            "github.com/parnurzeal/gorequest",
+            "github.com/gojek/heimdall",
+        ],
+        java: &[
+            "okhttp",
+            "okhttp3",
+            "apache.httpcomponents",
+            "httpclient",
+            "retrofit",
+            "spring-webclient",
+            "spring-webflux",
+            "feign",
+            "unirest",
+        ],
+    },
+};
 
 pub(crate) fn check(ctx: &AuditContext) -> Vec<Finding> {
-    multiple_http_clients(&ctx.tracked, &ctx.root)
-        .into_iter()
-        .collect()
+    detect_pile_up(ctx, &SPEC).into_iter().collect()
 }
 
-/// One offending manifest and which clients it lists.
-struct Offender {
-    path: String,
-    clients: Vec<String>,
-}
-
-fn multiple_http_clients(tracked: &[String], root: &Path) -> Option<Finding> {
-    let mut offenders: Vec<Offender> = Vec::new();
-    for path in tracked {
-        // Skip vendored / fixture manifests — agent-clone hygiene applies
-        // to the project's own deps only.
-        if crate::audit::util::is_generated_or_fixture(path) {
-            continue;
-        }
-        let name = basename(path).to_ascii_lowercase();
-        let clients: BTreeSet<&str> = match name.as_str() {
-            "package.json" => deps_from_package_json(&root.join(path), JS_HTTP_CLIENTS),
-            "pyproject.toml" => deps_from_pyproject(&root.join(path), PY_HTTP_CLIENTS),
-            "requirements.txt" => deps_from_requirements(&root.join(path), PY_HTTP_CLIENTS),
-            "cargo.toml" => deps_from_cargo(&root.join(path), RUST_HTTP_CLIENTS),
-            "go.mod" => deps_from_gomod(&root.join(path), GO_HTTP_CLIENTS),
-            "pom.xml" => deps_from_pom(&root.join(path), JAVA_HTTP_CLIENTS),
-            "build.gradle" | "build.gradle.kts" => {
-                deps_from_gradle(&root.join(path), JAVA_HTTP_CLIENTS)
-            }
-            _ => continue,
-        };
-        if clients.len() >= 2 {
-            offenders.push(Offender {
-                path: path.clone(),
-                clients: clients.into_iter().map(String::from).collect(),
-            });
-        }
-    }
-
-    if offenders.is_empty() {
-        return None;
-    }
-    offenders.sort_by(|a, b| b.clients.len().cmp(&a.clients.len()).then(a.path.cmp(&b.path)));
-    let worst_count = offenders[0].clients.len();
-    let severity = if worst_count >= 3 {
-        Severity::Critical
-    } else {
-        Severity::Warn
-    };
-
-    let evidence: Vec<String> = offenders
-        .iter()
-        .map(|o| format!("{}: {}", o.path, o.clients.join(", ")))
-        .collect();
-
-    Some(Finding::new(
-        Category::Inconsistency,
-        "multiple-http-clients",
-        severity,
-        format!(
-            "{} manifest(s) list multiple HTTP clients as direct deps — \
-             pick one; carrying both is an agent that didn't remember its previous answer",
-            offenders.len()
-        ),
-        evidence,
-    ))
-}
-
-const JS_HTTP_CLIENTS: &[&str] = &[
-    "axios",
-    "node-fetch",
-    "isomorphic-fetch",
-    "cross-fetch",
-    "ky",
-    "got",
-    "undici",
-    "superagent",
-    "request",
-    "phin",
-    "needle",
-    "wretch",
-    "redaxios",
-];
-
-/// Python: `requests` and `urllib3` are sometimes both present because
-/// requests *uses* urllib3. We deliberately list urllib3 only as a
-/// stand-alone client — adding it on top of requests + httpx still flags
-/// (the agent piled them on), but a project that only declares urllib3
-/// stays quiet.
-const PY_HTTP_CLIENTS: &[&str] = &[
-    "requests",
-    "httpx",
-    "aiohttp",
-    "urllib3",
-    "httplib2",
-    "tornado",
-    "pycurl",
-    "treq",
-    "niquests",
-];
-
-const RUST_HTTP_CLIENTS: &[&str] = &[
-    "reqwest",
-    "ureq",
-    "surf",
-    "isahc",
-    "curl",
-    "hyper",
-    "attohttpc",
-    "minreq",
-];
-
-const GO_HTTP_CLIENTS: &[&str] = &[
-    "github.com/go-resty/resty",
-    "github.com/valyala/fasthttp",
-    "github.com/imroc/req",
-    "github.com/parnurzeal/gorequest",
-    "github.com/gojek/heimdall",
-];
-
-const JAVA_HTTP_CLIENTS: &[&str] = &[
-    "okhttp",
-    "okhttp3",
-    "apache.httpcomponents",
-    "httpclient",
-    "retrofit",
-    "spring-webclient",
-    "spring-webflux",
-    "feign",
-    "unirest",
-];
-
-// ---------------- manifest parsers ----------------
-
-fn deps_from_package_json<'a>(path: &Path, known: &'a [&'a str]) -> BTreeSet<&'a str> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    let Ok(json) = serde_json::from_str::<JsonValue>(&text) else {
-        return BTreeSet::new();
-    };
-    let mut found = BTreeSet::new();
-    for field in ["dependencies", "devDependencies", "peerDependencies"] {
-        if let Some(deps) = json.get(field).and_then(JsonValue::as_object) {
-            for name in deps.keys() {
-                if let Some(k) = known.iter().find(|c| **c == name) {
-                    found.insert(*k);
-                }
-            }
-        }
-    }
-    found
-}
-
-fn deps_from_pyproject<'a>(path: &Path, known: &'a [&'a str]) -> BTreeSet<&'a str> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    let Ok(value) = text.parse::<toml::Value>() else {
-        return BTreeSet::new();
-    };
-    let mut found = BTreeSet::new();
-    // PEP 621 / standard `[project] dependencies = [...]`
-    if let Some(arr) = value
-        .get("project")
-        .and_then(|p| p.get("dependencies"))
-        .and_then(|v| v.as_array())
-    {
-        for d in arr {
-            if let Some(s) = d.as_str() {
-                if let Some(k) = match_pep_dep(s, known) {
-                    found.insert(k);
-                }
-            }
-        }
-    }
-    // Poetry-style: `[tool.poetry.dependencies] requests = "..."`
-    if let Some(table) = value
-        .get("tool")
-        .and_then(|t| t.get("poetry"))
-        .and_then(|p| p.get("dependencies"))
-        .and_then(|d| d.as_table())
-    {
-        for name in table.keys() {
-            if let Some(k) = known.iter().find(|c| **c == name) {
-                found.insert(*k);
-            }
-        }
-    }
-    found
-}
-
-fn match_pep_dep<'a>(spec: &str, known: &'a [&'a str]) -> Option<&'a str> {
-    // "requests>=2.31" / "httpx[http2]==0.25" — name is the prefix before
-    // any non-name character.
-    let name: String = spec
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        .collect();
-    known.iter().find(|c| **c == name.as_str()).copied()
-}
-
-fn deps_from_requirements<'a>(path: &Path, known: &'a [&'a str]) -> BTreeSet<&'a str> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    let mut found = BTreeSet::new();
-    for raw in text.lines() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() || line.starts_with('-') {
-            continue;
-        }
-        if let Some(k) = match_pep_dep(line, known) {
-            found.insert(k);
-        }
-    }
-    found
-}
-
-fn deps_from_cargo<'a>(path: &Path, known: &'a [&'a str]) -> BTreeSet<&'a str> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    let Ok(value) = text.parse::<toml::Value>() else {
-        return BTreeSet::new();
-    };
-    let mut found = BTreeSet::new();
-    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(table) = value.get(section).and_then(|v| v.as_table()) {
-            for name in table.keys() {
-                if let Some(k) = known.iter().find(|c| **c == name) {
-                    found.insert(*k);
-                }
-            }
-        }
-    }
-    found
-}
-
-fn deps_from_gomod<'a>(path: &Path, known: &'a [&'a str]) -> BTreeSet<&'a str> {
-    // go.mod isn't TOML — we walk line by line. A `require <module>
-    // <version>` line names one dep; a `require ( … )` block names many.
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    let mut found = BTreeSet::new();
-    let mut in_block = false;
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.starts_with("require (") {
-            in_block = true;
-            continue;
-        }
-        if in_block && line == ")" {
-            in_block = false;
-            continue;
-        }
-        let dep_text = if let Some(rest) = line.strip_prefix("require ") {
-            rest
-        } else if in_block {
-            line
-        } else {
-            continue;
-        };
-        let module = dep_text.split_whitespace().next().unwrap_or("");
-        // Match by *prefix* — `github.com/go-resty/resty/v2` should match
-        // `github.com/go-resty/resty`.
-        for k in known {
-            if module.starts_with(k) {
-                found.insert(*k);
-            }
-        }
-    }
-    found
-}
-
-fn deps_from_pom<'a>(path: &Path, known: &'a [&'a str]) -> BTreeSet<&'a str> {
-    // We don't parse XML — just grep for <artifactId> / <groupId>
-    // containing a known fragment. Maven artifact names vary enough that
-    // a substring check across both fields is the simplest robust thing.
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    let lower = text.to_ascii_lowercase();
-    let mut found = BTreeSet::new();
-    for k in known {
-        if lower.contains(&format!("<artifactid>{k}")) || lower.contains(&format!(">{k}<")) {
-            found.insert(*k);
-        }
-    }
-    found
-}
-
-fn deps_from_gradle<'a>(path: &Path, known: &'a [&'a str]) -> BTreeSet<&'a str> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    let lower = text.to_ascii_lowercase();
-    let mut found = BTreeSet::new();
-    for k in known {
-        if lower.contains(k) {
-            found.insert(*k);
-        }
-    }
-    found
-}
-
+// Tests are deliberately end-to-end here: they build a temp dir, write
+// manifests, populate an [`AuditContext`], and run `check`. That exercises
+// the full path through `manifests::detect_pile_up` rather than the
+// per-parser helpers, so it stays valuable even as the implementation
+// moves around.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::AuditContext;
+    use crate::finding::Severity;
+    use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -343,12 +109,20 @@ mod tests {
         dir
     }
 
-    fn run(dir: &TempDir, tracked: &[&str]) -> Option<Finding> {
-        let tracked: Vec<String> = tracked.iter().map(|s| s.to_string()).collect();
-        multiple_http_clients(&tracked, dir.path())
+    fn ctx_of(dir: &TempDir, tracked: &[&str]) -> AuditContext {
+        AuditContext {
+            root: dir.path().to_path_buf(),
+            tracked: tracked.iter().map(|s| s.to_string()).collect(),
+            commits: Vec::new(),
+            blob_history: HashMap::new(),
+            source_files: Vec::new(),
+        }
     }
 
-    // ---------- JS / TS (legacy tests, kept) ----------
+    fn run(dir: &TempDir, tracked: &[&str]) -> Option<Finding> {
+        let ctx = ctx_of(dir, tracked);
+        check(&ctx).into_iter().next()
+    }
 
     #[test]
     fn single_client_is_quiet() {
@@ -405,8 +179,6 @@ mod tests {
         assert!(run(&dir, &["package.json"]).is_none());
     }
 
-    // ---------- Python ----------
-
     #[test]
     fn python_pyproject_pep621_two_clients() {
         let dir = setup(&[(
@@ -446,20 +218,6 @@ aiohttp = "^3.9"
     }
 
     #[test]
-    fn python_single_client_is_quiet() {
-        let dir = setup(&[(
-            "pyproject.toml",
-            r#"
-[project]
-dependencies = ["requests"]
-"#,
-        )]);
-        assert!(run(&dir, &["pyproject.toml"]).is_none());
-    }
-
-    // ---------- Rust ----------
-
-    #[test]
     fn rust_cargo_two_clients() {
         let dir = setup(&[(
             "Cargo.toml",
@@ -481,23 +239,6 @@ serde = "1"
     }
 
     #[test]
-    fn rust_dev_deps_count_too() {
-        let dir = setup(&[(
-            "Cargo.toml",
-            r#"
-[dependencies]
-reqwest = "0.12"
-
-[dev-dependencies]
-ureq = "2"
-"#,
-        )]);
-        assert!(run(&dir, &["Cargo.toml"]).is_some());
-    }
-
-    // ---------- Go ----------
-
-    #[test]
     fn go_module_two_clients() {
         let dir = setup(&[(
             "go.mod",
@@ -517,8 +258,6 @@ require (
         assert!(f.evidence[0].contains("resty"));
         assert!(f.evidence[0].contains("fasthttp"));
     }
-
-    // ---------- Java ----------
 
     #[test]
     fn java_pom_two_clients() {

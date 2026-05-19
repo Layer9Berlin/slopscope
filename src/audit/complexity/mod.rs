@@ -6,6 +6,8 @@
 //! amplified* complexity is flagged — a 2000-line file that hasn't been
 //! touched in a year is not slop.
 
+mod deep_nesting;
+mod god_function_loc;
 mod oversized_growing_files;
 
 use crate::audit::AuditContext;
@@ -14,5 +16,7 @@ use crate::finding::Finding;
 pub(crate) fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
     findings.extend(oversized_growing_files::check(ctx));
+    findings.extend(god_function_loc::check(ctx));
+    findings.extend(deep_nesting::check(ctx));
     findings
 }
