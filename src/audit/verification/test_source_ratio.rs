@@ -32,7 +32,33 @@ const SOURCE_EXTS: &[&str] = &[
 ];
 
 pub(crate) fn check(ctx: &AuditContext) -> Vec<Finding> {
-    test_source_ratio(&ctx.tracked).into_iter().collect()
+    // Build a fast lookup of paths that contain Rust inline tests. The
+    // signal counts these as *both* source AND test because that's exactly
+    // what they are — production code with `#[cfg(test)] mod tests`
+    // colocated. Without this the audit reports e.g. "40 source, 1 test"
+    // for slopscope itself when every other .rs file has inline tests.
+    let inline_test_paths: std::collections::HashSet<&str> = ctx
+        .source_files
+        .iter()
+        .filter(|f| has_rust_inline_tests(f))
+        .map(|f| f.path.as_str())
+        .collect();
+    test_source_ratio(&ctx.tracked, &inline_test_paths)
+        .into_iter()
+        .collect()
+}
+
+/// Detect Rust inline tests. We don't need the AST for this — a substring
+/// check on `#[cfg(test)]` / `#[test]` is enough, and avoids depending on
+/// every test file having a parse tree. The strings are unambiguous
+/// (`#[cfg(test)]` doesn't appear in normal Rust code).
+fn has_rust_inline_tests(file: &crate::audit::source::SourceFile) -> bool {
+    if file.language != crate::audit::source::Language::Rust {
+        return false;
+    }
+    file.content.contains("#[cfg(test)]")
+        || file.content.contains("#[test]")
+        || file.content.contains("#[tokio::test]")
 }
 
 /// True if a path lives under a conventional test directory.
@@ -65,7 +91,10 @@ fn ext_of(name: &str) -> Option<&str> {
     name.rsplit_once('.').map(|(_, e)| e)
 }
 
-fn test_source_ratio(tracked: &[String]) -> Option<Finding> {
+fn test_source_ratio(
+    tracked: &[String],
+    inline_test_paths: &std::collections::HashSet<&str>,
+) -> Option<Finding> {
     let mut source = 0usize;
     let mut tests = 0usize;
 
@@ -96,6 +125,13 @@ fn test_source_ratio(tracked: &[String]) -> Option<Finding> {
             continue;
         }
         source += 1;
+        // Rust inline tests: the same file is both production code and a
+        // test, so we count it on both sides. This is intentional — the
+        // signal asks "is meaningful testing happening?", and inline tests
+        // are the canonical Rust answer.
+        if inline_test_paths.contains(path.as_str()) {
+            tests += 1;
+        }
     }
 
     if source < MIN_SOURCE {
@@ -143,12 +179,12 @@ mod tests {
     #[test]
     fn small_repo_is_quiet() {
         // 10 source files, no tests — below MIN_SOURCE.
-        assert!(test_source_ratio(&n_sources(10, "ts")).is_none());
+        assert!(test_source_ratio(&n_sources(10, "ts"), &Default::default()).is_none());
     }
 
     #[test]
     fn zero_tests_in_substantial_repo_is_critical() {
-        let f = one(test_source_ratio(&n_sources(60, "ts")));
+        let f = one(test_source_ratio(&n_sources(60, "ts"), &Default::default()));
         assert_eq!(f.check, "test-source-ratio");
         assert_eq!(f.severity, Severity::Critical);
         assert!(f.summary.contains("0 test"));
@@ -160,7 +196,7 @@ mod tests {
         for i in 0..10 {
             paths.push(format!("src/f{i}.test.ts"));
         }
-        assert!(test_source_ratio(&paths).is_none());
+        assert!(test_source_ratio(&paths, &Default::default()).is_none());
     }
 
     #[test]
@@ -169,7 +205,7 @@ mod tests {
         let mut paths = n_sources(60, "ts");
         paths.push("src/auth.test.ts".into());
         paths.push("src/user.test.ts".into());
-        let f = one(test_source_ratio(&paths));
+        let f = one(test_source_ratio(&paths, &Default::default()));
         assert_eq!(f.severity, Severity::Warn);
     }
 
@@ -180,7 +216,7 @@ mod tests {
         for i in 0..10 {
             paths.push(format!("tests/test_f{i}.py"));
         }
-        assert!(test_source_ratio(&paths).is_none());
+        assert!(test_source_ratio(&paths, &Default::default()).is_none());
     }
 
     #[test]
@@ -191,7 +227,7 @@ mod tests {
         for i in 0..20 {
             paths.push(format!("t/t{i:04}-some-test.sh"));
         }
-        assert!(test_source_ratio(&paths).is_none());
+        assert!(test_source_ratio(&paths, &Default::default()).is_none());
     }
 
     #[test]
@@ -201,7 +237,7 @@ mod tests {
         for i in 0..15 {
             paths.push(format!("test/functional/spec_{i}.lua"));
         }
-        assert!(test_source_ratio(&paths).is_none());
+        assert!(test_source_ratio(&paths, &Default::default()).is_none());
     }
 
     #[test]
@@ -210,7 +246,7 @@ mod tests {
         for i in 0..10 {
             paths.push(format!("internal/f{i}_test.go"));
         }
-        assert!(test_source_ratio(&paths).is_none());
+        assert!(test_source_ratio(&paths, &Default::default()).is_none());
     }
 
     #[test]
@@ -222,13 +258,34 @@ mod tests {
             "assets/logo.svg".to_string(),
         ];
         paths.extend(n_sources(60, "ts"));
-        let f = test_source_ratio(&paths);
+        let f = test_source_ratio(&paths, &Default::default());
         // The .md/.json/.svg are dropped; only the 60 .ts files count.
         assert_eq!(f.unwrap().severity, Severity::Critical);
     }
 
     #[test]
     fn integrates_with_files_helper() {
-        assert!(test_source_ratio(&files(&["src/main.rs"])).is_none());
+        assert!(test_source_ratio(&files(&["src/main.rs"]), &Default::default()).is_none());
+    }
+
+    #[test]
+    fn rust_inline_tests_count_on_both_sides() {
+        // Rust convention: production code and unit tests in the same .rs
+        // file via `#[cfg(test)] mod tests`. If we ignored that, slopscope's
+        // own audit would falsely report "40 source, 1 test".
+        let paths = n_sources(60, "rs");
+        let inline: std::collections::HashSet<&str> =
+            paths.iter().take(45).map(String::as_str).collect();
+        // 60 source, 45 with inline tests → ratio 0.75, well above MIN_RATIO.
+        assert!(test_source_ratio(&paths, &inline).is_none());
+    }
+
+    #[test]
+    fn rust_without_inline_tests_still_fires() {
+        // The fix shouldn't silence repos that genuinely have no tests.
+        let paths = n_sources(60, "rs");
+        let inline: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let f = one(test_source_ratio(&paths, &inline));
+        assert!(f.summary.contains("0 test"));
     }
 }

@@ -17,6 +17,7 @@
 use crate::audit::source::{Language, SourceFile};
 use crate::audit::AuditContext;
 use crate::finding::{Category, Finding, Severity};
+use tree_sitter::Node;
 
 /// Below this total the signal is silent. Narrator-style prose appears at
 /// some baseline rate in heavily commented OSS codebases (React's reconciler
@@ -33,17 +34,19 @@ pub(crate) fn check(ctx: &AuditContext) -> Vec<Finding> {
 fn narrator_comments(files: &[SourceFile]) -> Option<Finding> {
     let mut hits: Vec<(String, usize, String)> = Vec::new();
     for file in files {
-        let marker = line_comment_marker(file.language);
-        for (lineno, line) in file.lines() {
-            let Some(idx) = line.find(marker) else { continue };
-            // The text after the marker, trimmed.
-            let body = line[idx + marker.len()..].trim_start();
-            if body.is_empty() {
-                continue;
-            }
-            if is_narrator(body) {
-                hits.push((file.path.clone(), lineno, trim_to(line, 100)));
-            }
+        if let Some(tree) = file.tree.as_ref() {
+            // AST path: only inspect real comment nodes. Strings, template
+            // literals, and identifiers that happen to start with "now
+            // let's" cannot trip this — they're a different node kind.
+            // (slopscope's own narrator_comments.rs surfaced this: 14 hits
+            // were all string literals inside unit tests.)
+            collect_from_ast(tree.root_node(), file, &mut hits);
+        } else {
+            // Fallback for languages without a grammar (Java, Kotlin, Ruby,
+            // PHP, …): walk lines and split on the comment marker. The
+            // regex can over-match if a string literal mimics a comment,
+            // but that's rare enough in those languages to accept here.
+            collect_from_lines(file, &mut hits);
         }
     }
     if hits.len() < REPO_MIN {
@@ -83,6 +86,68 @@ fn line_comment_marker(lang: Language) -> &'static str {
     match lang {
         Language::Python | Language::Ruby | Language::Shell => "#",
         _ => "//",
+    }
+}
+
+/// Walk a parse tree and accumulate hits from every comment node. tree-sitter
+/// names comment nodes consistently across the grammars we ship: `comment`
+/// for JS/TS/Python/Go, and `line_comment` / `block_comment` for Rust.
+fn collect_from_ast(node: Node, file: &SourceFile, hits: &mut Vec<(String, usize, String)>) {
+    let mut cursor = node.walk();
+    let mut stack: Vec<Node> = vec![node];
+    while let Some(n) = stack.pop() {
+        if is_comment_node(n.kind()) {
+            if let Ok(text) = n.utf8_text(file.bytes()) {
+                let body = strip_comment_markers(text);
+                if is_narrator(body) {
+                    let line = n.start_position().row + 1;
+                    // Use the first physical line of the comment as the
+                    // displayed snippet — block comments can span many.
+                    let snippet = text.lines().next().unwrap_or("");
+                    hits.push((file.path.clone(), line, trim_to(snippet, 100)));
+                }
+            }
+            continue;
+        }
+        for child in n.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+fn is_comment_node(kind: &str) -> bool {
+    matches!(kind, "comment" | "line_comment" | "block_comment")
+}
+
+/// Strip the comment-marker chrome so `is_narrator` sees only the prose.
+/// Handles `// …`, `/* … */`, `# …`, `--  …`, and the various leading
+/// asterisks of jsdoc-style `/** … */` continuations.
+fn strip_comment_markers(text: &str) -> &str {
+    let mut s = text;
+    // Drop leading // or /* or */ or # or -- markers, then leading
+    // whitespace / asterisks (for /** continuation lines).
+    for marker in ["/**", "/*", "//", "*/", "--", "#"] {
+        if let Some(rest) = s.strip_prefix(marker) {
+            s = rest;
+            break;
+        }
+    }
+    s.trim_start_matches(|c: char| c.is_whitespace() || c == '*')
+}
+
+/// Fallback line walker for languages without a tree-sitter grammar. Same
+/// behaviour as the original implementation.
+fn collect_from_lines(file: &SourceFile, hits: &mut Vec<(String, usize, String)>) {
+    let marker = line_comment_marker(file.language);
+    for (lineno, line) in file.lines() {
+        let Some(idx) = line.find(marker) else { continue };
+        let body = line[idx + marker.len()..].trim_start();
+        if body.is_empty() {
+            continue;
+        }
+        if is_narrator(body) {
+            hits.push((file.path.clone(), lineno, trim_to(line, 100)));
+        }
     }
 }
 
@@ -260,6 +325,42 @@ mod tests {
                    // I'M going to ADD a retry\n// I'll add caching\n\
                    // I'll create the worker\n// I'll build the report\n";
         let files = vec![f("src/a.ts", Language::Ts, big)];
+        assert!(narrator_comments(&files).is_some());
+    }
+
+    #[test]
+    fn narrator_phrases_inside_strings_do_not_trip() {
+        // slopscope's self-audit caught this: 14 false positives from its
+        // own narrator_comments.rs because the unit-test fixtures contain
+        // *string literals* with `// Now let's …` inside. The AST path
+        // sees those as `string` / `string_literal` nodes, not comment
+        // nodes, so they don't count.
+        let big = "fn helper() -> &'static str {\n\
+                       \"// Now let's add error handling\\n\
+                        // Here we'll initialize\\n\
+                        // As you can see\\n\
+                        // Let me explain\\n\
+                        // I'll add a fallback\\n\
+                        // I'll implement it\\n\
+                        // I'll create the worker\\n\
+                        // I'll build the report\\n\
+                        // I'm going to add retry\\n\"\n\
+                   }\n";
+        let files = vec![f("src/lib.rs", Language::Rust, big)];
+        assert!(narrator_comments(&files).is_none());
+    }
+
+    #[test]
+    fn block_comments_in_rust_are_inspected() {
+        let big = "/* Now let's add error handling */\n\
+                   /* Here we'll initialize the database */\n\
+                   /* As you can see, this is cached */\n\
+                   /* Let me explain this */\n\
+                   /* I'll add a fallback here */\n\
+                   /* I'm going to implement the retry loop */\n\
+                   /* We're going to add a backoff strategy */\n\
+                   /* This is where we'll handle errors */\n";
+        let files = vec![f("src/lib.rs", Language::Rust, big)];
         assert!(narrator_comments(&files).is_some());
     }
 }
