@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "slopscope": {
+      "command": "slopscope",
+      "args": ["mcp"]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+# slopscope — Codex MCP server integration
+#
+# Codex discovers MCP servers from ~/.codex/config.toml. Either merge the
+# block below into that file (create it if it doesn't exist), or run:
+#
+#     codex mcp add slopscope -- slopscope mcp
+#
+# Either way, the `slopscope` binary must be on your PATH — see the repo
+# README for install instructions.
+
+[mcp_servers.slopscope]
+command = "slopscope"
+args = ["mcp"]

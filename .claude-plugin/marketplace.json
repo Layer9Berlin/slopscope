@@ -1,0 +1,15 @@
+{
+  "name": "layer9",
+  "owner": {
+    "name": "Lukas Neumann",
+    "email": "accounts@layer9.berlin"
+  },
+  "plugins": [
+    {
+      "name": "slopscope",
+      "source": "./integrations/claude-plugin",
+      "description": "Audit a repository for AI/vibe-coding 'slop' — committed secrets, mega-commits, churn hotspots, god functions, dependency pile-ups — as deterministic, ground-truth findings.",
+      "version": "0.1.0"
+    }
+  ]
+}

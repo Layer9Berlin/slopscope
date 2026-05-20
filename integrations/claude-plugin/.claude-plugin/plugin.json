@@ -1,0 +1,12 @@
+{
+  "name": "slopscope",
+  "displayName": "slopscope",
+  "description": "Detect 'slop' in AI/vibe-coded codebases. Bundles the slopscope MCP server (a deterministic audit tool) and a /slopscope:audit command.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Lukas Neumann",
+    "email": "accounts@layer9.berlin"
+  },
+  "license": "MIT",
+  "keywords": ["audit", "code-quality", "mcp", "ai", "vibe-coding"]
+}
