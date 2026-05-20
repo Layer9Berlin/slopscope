@@ -1,0 +1,41 @@
+name: test
+
+# Gate every push to main and every PR on the test suite + clippy. slopscope
+# audits itself for `no-ci-config`; this workflow is what makes that finding
+# go quiet — and, more importantly, stops broken code from landing.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref cancels the in-flight run — no point finishing
+# CI for a commit that's already been superseded.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Caches the cargo registry + target dir keyed on Cargo.lock. The
+      # tree-sitter C grammars are slow to compile, so this matters.
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+
+      # Plain `cargo test` (not `--all-targets`) so doctests run too — we
+      # have no examples/benches, so this is the complete suite.
+      - name: Test
+        run: cargo test --locked
+
+      # `-D warnings` turns any clippy lint into a build failure. The repo is
+      # clippy-clean as of this workflow landing; keep it that way.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings

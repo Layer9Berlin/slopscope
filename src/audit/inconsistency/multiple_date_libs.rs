@@ -45,7 +45,7 @@ mod tests {
     use crate::finding::Severity;
     use std::collections::HashMap;
     use std::fs;
-    use tempfile::TempDir;
+    
 
     fn run(rel: &str, content: &str) -> Option<Finding> {
         let dir = tempfile::tempdir().unwrap();

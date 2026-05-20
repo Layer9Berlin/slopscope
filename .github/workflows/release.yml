@@ -1,0 +1,124 @@
+name: release
+
+# Manual release. Dispatch with a version tag (e.g. v0.1.0); the workflow
+# builds slopscope for every supported platform and publishes a GitHub
+# Release with the binaries attached.
+#
+# Test gating is intentionally left to the `test` workflow — dispatch this
+# only once `test` is green on the commit you're releasing.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag, e.g. v0.1.0"
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: build (${{ matrix.artifact }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: x86_64-linux
+            targets: x86_64-unknown-linux-gnu
+          # ubuntu-*-arm runners are free for public repos; a private repo
+          # would need a paid plan or a cross-compile fallback.
+          - os: ubuntu-24.04-arm
+            artifact: aarch64-linux
+            targets: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            artifact: x86_64-windows
+            targets: x86_64-pc-windows-msvc
+          # macOS ships one universal binary: built on an Apple Silicon
+          # runner, with the x86_64 slice cross-compiled (macOS clang does
+          # both arches natively) and `lipo`'d together.
+          - os: macos-14
+            artifact: macos-universal
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.artifact }}
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          case "${{ matrix.artifact }}" in
+            macos-universal)
+              cargo build --release --locked --target aarch64-apple-darwin
+              cargo build --release --locked --target x86_64-apple-darwin
+              lipo -create -output dist/slopscope \
+                target/aarch64-apple-darwin/release/slopscope \
+                target/x86_64-apple-darwin/release/slopscope
+              ;;
+            x86_64-windows)
+              cargo build --release --locked --target x86_64-pc-windows-msvc
+              cp target/x86_64-pc-windows-msvc/release/slopscope.exe dist/
+              ;;
+            *)
+              cargo build --release --locked --target "${{ matrix.targets }}"
+              cp "target/${{ matrix.targets }}/release/slopscope" dist/
+              ;;
+          esac
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="slopscope-${{ inputs.version }}-${{ matrix.artifact }}"
+          cd dist
+          if [ -f slopscope.exe ]; then
+            7z a "../${name}.zip" slopscope.exe
+          else
+            tar czf "../${name}.tar.gz" slopscope
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            *.tar.gz
+            *.zip
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # No checkout needed — `gh release create --repo` operates against the
+      # API, and the tag target is passed explicitly as a SHA.
+      - name: Collect artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ inputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "slopscope ${{ inputs.version }}" \
+            --generate-notes \
+            artifacts/*

@@ -257,7 +257,7 @@ fn strip_quotes(s: &str) -> String {
     }
     // Python string with prefix?  `r"…"`, `f"…"`, `rb"…"` — drop everything
     // up to the first quote then drop the trailing quote.
-    if let Some(q_pos) = s.find(|c: char| c == '"' || c == '\'') {
+    if let Some(q_pos) = s.find(['"', '\'']) {
         let q = bytes[q_pos];
         if s.ends_with(q as char) {
             return s[q_pos + 1..s.len() - 1].to_string();

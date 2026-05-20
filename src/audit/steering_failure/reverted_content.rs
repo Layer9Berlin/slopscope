@@ -223,7 +223,7 @@ mod tests {
             .map(|i| {
                 (
                     format!("f{i}.rs"),
-                    vec!["A", "B", "A", "B", "A", "B", "A"]
+                    ["A", "B", "A", "B", "A", "B", "A"]
                         .iter()
                         .map(|s| s.to_string())
                         .collect(),
@@ -245,7 +245,7 @@ mod tests {
             .map(|i| {
                 (
                     format!("f{i}.rs"),
-                    vec!["A", "B", "A", "B", "A", "B", "A"]
+                    ["A", "B", "A", "B", "A", "B", "A"]
                         .iter()
                         .map(|s| s.to_string())
                         .collect(),

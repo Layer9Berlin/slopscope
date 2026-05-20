@@ -254,7 +254,7 @@ mod tests {
     fn big_file_with_no_recent_activity_is_quiet() {
         // 2500 lines but the only activity was years ago — current "recent"
         // window is empty.
-        let commits = vec![touch(0, "src/old.ts", 2500, 0)];
+        let commits = [touch(0, "src/old.ts", 2500, 0)];
         let later = touch(5000 * DAY, "src/other.ts", 5, 0);
         let commits = vec![commits[0].clone(), later];
         assert!(run(&["src/old.ts"], &commits, &[("src/old.ts", 2500)]).is_none());

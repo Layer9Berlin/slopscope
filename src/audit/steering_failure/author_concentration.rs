@@ -123,7 +123,7 @@ mod tests {
     fn balanced(authors: &[&str], n: usize) -> Vec<Commit> {
         authors
             .iter()
-            .flat_map(|a| std::iter::repeat(*a).take(n))
+            .flat_map(|a| std::iter::repeat_n(*a, n))
             .map(commit)
             .collect()
     }
@@ -150,7 +150,7 @@ mod tests {
         // 6 substantial authors, but the lead holds > SOLO_DOMINANCE_SHARE.
         let mut authors: Vec<&str> = vec!["lead@x.com"; 100];
         for a in ["b@x.com", "c@x.com", "d@x.com", "e@x.com", "f@x.com"] {
-            authors.extend(std::iter::repeat(a).take(11));
+            authors.extend(std::iter::repeat_n(a, 11));
         }
         // lead 100 / 155 ~= 65% >= 60%.
         assert!(author_concentration(&log(&authors)).is_none());
