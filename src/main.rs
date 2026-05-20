@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use slopscope::{audit, finding::Severity, report};
+use slopscope::{audit, finding::Severity, mcp, report};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -26,12 +26,27 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run as an MCP server over stdio — exposes the audit as a tool an
+    /// agent can call. Speaks JSON-RPC 2.0 on stdin/stdout.
+    Mcp,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Audit { path, json } => run_audit(path, json),
+        Command::Mcp => run_mcp(),
+    }
+}
+
+/// Exit codes: 0 = clean shutdown, 3 = server error.
+fn run_mcp() -> ExitCode {
+    match mcp::serve() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("mcp error: {e:#}");
+            ExitCode::from(3)
+        }
     }
 }
 
