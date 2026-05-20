@@ -26,6 +26,8 @@ tree-sitter-go = "0.23"
 # `toml` lets the HTTP-client inconsistency signal read Cargo.toml /
 # pyproject.toml direct deps.
 toml = "0.8"
+rmcp = { version = "1.7.0", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 
 [dev-dependencies]
 tempfile = "3"

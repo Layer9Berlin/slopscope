@@ -40,8 +40,19 @@ fn main() -> ExitCode {
 }
 
 /// Exit codes: 0 = clean shutdown, 3 = server error.
+///
+/// `mcp::serve` is async (the `rmcp` SDK is tokio-based), so we spin up a
+/// runtime here rather than making all of `main` async — the `audit`
+/// subcommand stays a plain synchronous path.
 fn run_mcp() -> ExitCode {
-    match mcp::serve() {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("mcp error: could not start async runtime: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    match runtime.block_on(mcp::serve()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("mcp error: {e:#}");

@@ -1,119 +1,54 @@
-//! Minimal MCP (Model Context Protocol) server over stdio.
+//! MCP server — exposes the slopscope audit as a tool over the Model
+//! Context Protocol.
 //!
-//! MCP's stdio transport is JSON-RPC 2.0 with newline-delimited messages —
-//! one JSON object per line, no embedded newlines. That's simple enough that
-//! a hand-rolled loop beats pulling in an async runtime (`tokio` + `rmcp`)
-//! for what is a synchronous request/response exchange: the only tool we
-//! expose runs a blocking audit and returns.
+//! Built on the official `rmcp` SDK rather than a hand-rolled JSON-RPC
+//! loop: MCP is the spec's first-class product surface, so capability
+//! negotiation, protocol-revision tracking, and alternative transports
+//! should come from the SDK, not our maintenance budget.
 //!
-//! Protocol surface implemented:
-//! - `initialize` / `notifications/initialized`
-//! - `tools/list` / `tools/call`
-//! - `ping`
-//!
-//! Everything else gets a JSON-RPC "method not found". Notifications (no
-//! `id`) never get a response.
-//!
-//! stdout carries *only* protocol messages — the audit path never prints
-//! there (git output is captured, tree-sitter is silent), so the channel
-//! stays clean. Diagnostics go to stderr.
+//! One tool, `audit`. The audit is synchronous and blocking (git
+//! subprocesses, tree-sitter parsing, file IO), so it runs inside
+//! `spawn_blocking` to keep the async executor free.
 
 use crate::{audit, report};
-use anyhow::Result;
-use serde_json::{json, Value};
-use std::io::{BufRead, Write};
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{
+    CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo,
+};
+use rmcp::transport::stdio;
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
 use std::path::PathBuf;
 
-/// MCP protocol revision we implement against. Clients negotiate; we echo
-/// the client's requested version back when it sends one (the protocol has
-/// been stable enough across recent revisions that this maximises compat).
-const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
+/// Arguments for the `audit` tool. Field doc comments become the JSON-schema
+/// descriptions the client sees.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct AuditParams {
+    /// Path to the git repository to audit. Defaults to the current directory.
+    #[serde(default)]
+    path: Option<String>,
+    /// Output format: "human" (default, a readable report) or "json" (the
+    /// structured finding list for programmatic use).
+    #[serde(default)]
+    format: Option<String>,
+}
 
-/// Run the server: read JSON-RPC from stdin, write responses to stdout,
-/// until EOF (client disconnect).
-pub fn serve() -> Result<()> {
-    let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
+/// The MCP server. Holds the generated tool router; otherwise stateless.
+#[derive(Clone)]
+pub struct SlopscopeServer {
+    tool_router: ToolRouter<Self>,
+}
 
-    eprintln!("slopscope mcp server ready (stdio)");
-
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let n = reader.read_line(&mut line)?;
-        if n == 0 {
-            break; // EOF — client disconnected.
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(e) => {
-                // Malformed JSON — we have no id to attach an error to, so
-                // log and move on rather than guess.
-                eprintln!("mcp: skipping malformed message: {e}");
-                continue;
-            }
-        };
-        if let Some(response) = handle(&request) {
-            // serde_json::to_string is single-line — satisfies the
-            // "no embedded newlines" rule of the stdio transport.
-            let s = serde_json::to_string(&response)?;
-            writeln!(out, "{s}")?;
-            out.flush()?;
+#[tool_router]
+impl SlopscopeServer {
+    fn new() -> Self {
+        Self {
+            tool_router: Self::tool_router(),
         }
     }
-    Ok(())
-}
 
-/// Dispatch one JSON-RPC message. Returns `Some(response)` for requests,
-/// `None` for notifications (a message with no `id`).
-fn handle(req: &Value) -> Option<Value> {
-    let method = req.get("method").and_then(Value::as_str)?;
-    // A message with no `id` is a notification: never answer it. This
-    // single rule handles `notifications/initialized` and friends.
-    let id = req.get("id").cloned()?;
-
-    Some(match method {
-        "initialize" => ok(id, initialize_result(req)),
-        "tools/list" => ok(id, tools_list_result()),
-        "tools/call" => handle_tool_call(id, req),
-        "ping" => ok(id, json!({})),
-        other => error(id, -32601, &format!("method not found: {other}")),
-    })
-}
-
-fn initialize_result(req: &Value) -> Value {
-    // Echo the client's requested protocol version when present.
-    let version = req
-        .get("params")
-        .and_then(|p| p.get("protocolVersion"))
-        .and_then(Value::as_str)
-        .unwrap_or(DEFAULT_PROTOCOL_VERSION);
-    json!({
-        "protocolVersion": version,
-        "capabilities": { "tools": {} },
-        "serverInfo": {
-            "name": "slopscope",
-            "version": env!("CARGO_PKG_VERSION"),
-        },
-    })
-}
-
-fn tools_list_result() -> Value {
-    json!({
-        "tools": [ audit_tool_schema() ]
-    })
-}
-
-fn audit_tool_schema() -> Value {
-    json!({
-        "name": "audit",
-        "description": "Audit a git repository for 'slop' — the structural \
+    #[tool(
+        description = "Audit a git repository for 'slop' — the structural \
             signature of AI / vibe-coded codebases. Returns deterministic, \
             ground-truth findings (not opinions): committed secrets, \
             mega-commits, churn hotspots, god functions, swallowed errors, \
@@ -122,83 +57,76 @@ fn audit_tool_schema() -> Value {
             (info / warn / critical), a stable check id, and concrete \
             evidence — file paths, commit hashes, counts. Use this before \
             trusting an unfamiliar repo, or to verify your own changes \
-            didn't introduce slop.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to the git repository to audit. \
-                        Defaults to the current directory."
-                },
-                "format": {
-                    "type": "string",
-                    "enum": ["human", "json"],
-                    "description": "Output format. 'human' (default) is a \
-                        readable report; 'json' is the structured finding \
-                        list for programmatic use."
+            didn't introduce slop."
+    )]
+    async fn audit(
+        &self,
+        Parameters(params): Parameters<AuditParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let path = params.path.unwrap_or_else(|| ".".to_string());
+        let want_json = params.format.as_deref() == Some("json");
+
+        // `audit::run` is blocking — git subprocess, tree-sitter, file IO.
+        // Run it off the async executor so the runtime stays responsive.
+        let outcome = tokio::task::spawn_blocking(move || {
+            audit::run(&PathBuf::from(&path)).map(|rep| {
+                if want_json {
+                    report::json(&rep)
+                } else {
+                    report::human(&rep)
                 }
+            })
+        })
+        .await;
+
+        // A tool-execution failure (not a git repo, unreadable path) is a
+        // normal result with is_error set — per MCP, only protocol-level
+        // problems are JSON-RPC errors, which the SDK handles for us.
+        Ok(match outcome {
+            Ok(Ok(text)) => CallToolResult::success(vec![Content::text(text)]),
+            Ok(Err(e)) => {
+                CallToolResult::error(vec![Content::text(format!("audit failed: {e:#}"))])
             }
-        }
-    })
+            Err(join_err) => CallToolResult::error(vec![Content::text(format!(
+                "audit task panicked: {join_err}"
+            ))]),
+        })
+    }
 }
 
-/// Run the `audit` tool. Per MCP, a *tool-execution* failure (not a git
-/// repo, unreadable path) is a normal result with `isError: true` — only
-/// protocol-level problems (unknown tool, bad params) are JSON-RPC errors.
-fn handle_tool_call(id: Value, req: &Value) -> Value {
-    let params = req.get("params");
-    let name = params
-        .and_then(|p| p.get("name"))
-        .and_then(Value::as_str);
-    if name != Some("audit") {
-        return error(
-            id,
-            -32602,
-            &format!("unknown tool: {}", name.unwrap_or("<missing>")),
+// `router = self.tool_router` makes the handler dispatch through the
+// stored router field. Without it the macro defaults to calling
+// `Self::tool_router()` afresh on every request — rebuilding the router
+// each time and leaving our field unused.
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for SlopscopeServer {
+    fn get_info(&self) -> ServerInfo {
+        // `ServerInfo` (alias of `InitializeResult`) is `#[non_exhaustive]`,
+        // so we start from `Default` and set the fields we care about
+        // rather than using a struct literal.
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        // `Implementation::from_build_env()` resolves the *rmcp* crate's
+        // package name, not ours — so set name/version explicitly from
+        // slopscope's own build env.
+        info.server_info =
+            Implementation::new("slopscope", env!("CARGO_PKG_VERSION"));
+        info.instructions = Some(
+            "slopscope detects 'slop' in AI/vibe-coded codebases. Call the \
+             `audit` tool with a repository path to get deterministic \
+             findings an agent can act on."
+                .to_string(),
         );
-    }
-    let args = params.and_then(|p| p.get("arguments"));
-    let path = args
-        .and_then(|a| a.get("path"))
-        .and_then(Value::as_str)
-        .unwrap_or(".");
-    let format = args
-        .and_then(|a| a.get("format"))
-        .and_then(Value::as_str)
-        .unwrap_or("human");
-
-    match audit::run(&PathBuf::from(path)) {
-        Ok(rep) => {
-            let text = if format == "json" {
-                report::json(&rep)
-            } else {
-                report::human(&rep)
-            };
-            ok(id, tool_text(&text, false))
-        }
-        Err(e) => ok(id, tool_text(&format!("audit failed: {e:#}"), true)),
+        info
     }
 }
 
-/// An MCP `tools/call` result: a single text content block.
-fn tool_text(text: &str, is_error: bool) -> Value {
-    json!({
-        "content": [ { "type": "text", "text": text } ],
-        "isError": is_error,
-    })
-}
-
-fn ok(id: Value, result: Value) -> Value {
-    json!({ "jsonrpc": "2.0", "id": id, "result": result })
-}
-
-fn error(id: Value, code: i64, message: &str) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": { "code": code, "message": message },
-    })
+/// Run the MCP server over stdio until the client disconnects.
+pub async fn serve() -> anyhow::Result<()> {
+    eprintln!("slopscope mcp server ready (stdio)");
+    let service = SlopscopeServer::new().serve(stdio()).await?;
+    service.waiting().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -206,95 +134,8 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    fn req(method: &str, id: Value, params: Value) -> Value {
-        json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
-    }
-
-    #[test]
-    fn initialize_returns_capabilities_and_server_info() {
-        let r = handle(&req("initialize", json!(1), json!({}))).expect("response");
-        assert_eq!(r["jsonrpc"], "2.0");
-        assert_eq!(r["id"], 1);
-        assert_eq!(r["result"]["serverInfo"]["name"], "slopscope");
-        assert!(r["result"]["capabilities"]["tools"].is_object());
-        assert_eq!(r["result"]["protocolVersion"], DEFAULT_PROTOCOL_VERSION);
-    }
-
-    #[test]
-    fn initialize_echoes_client_protocol_version() {
-        let r = handle(&req(
-            "initialize",
-            json!(1),
-            json!({ "protocolVersion": "2024-11-05" }),
-        ))
-        .expect("response");
-        assert_eq!(r["result"]["protocolVersion"], "2024-11-05");
-    }
-
-    #[test]
-    fn notifications_get_no_response() {
-        // No `id` field → notification → None.
-        let msg = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert!(handle(&msg).is_none());
-    }
-
-    #[test]
-    fn tools_list_advertises_audit() {
-        let r = handle(&req("tools/list", json!(2), json!({}))).expect("response");
-        let tools = r["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], "audit");
-        assert!(tools[0]["inputSchema"]["properties"]["path"].is_object());
-    }
-
-    #[test]
-    fn ping_returns_empty_result() {
-        let r = handle(&req("ping", json!(3), json!({}))).expect("response");
-        assert!(r["result"].is_object());
-        assert!(r.get("error").is_none());
-    }
-
-    #[test]
-    fn unknown_method_is_a_jsonrpc_error() {
-        let r = handle(&req("does/not/exist", json!(4), json!({}))).expect("response");
-        assert_eq!(r["error"]["code"], -32601);
-    }
-
-    #[test]
-    fn unknown_tool_is_a_jsonrpc_error() {
-        let r = handle(&req(
-            "tools/call",
-            json!(5),
-            json!({ "name": "frobnicate", "arguments": {} }),
-        ))
-        .expect("response");
-        assert_eq!(r["error"]["code"], -32602);
-    }
-
-    #[test]
-    fn audit_on_non_git_path_is_tool_error_not_protocol_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let r = handle(&req(
-            "tools/call",
-            json!(6),
-            json!({
-                "name": "audit",
-                "arguments": { "path": dir.path().to_str().unwrap() }
-            }),
-        ))
-        .expect("response");
-        // Not a git repo → tool result with isError, NOT a JSON-RPC error.
-        assert!(r.get("error").is_none());
-        assert_eq!(r["result"]["isError"], true);
-        assert!(r["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("audit failed"));
-    }
-
-    #[test]
-    fn audit_on_real_repo_returns_a_report() {
-        // Build a tiny git repo so the audit has something to chew on.
+    /// Build a minimal git repo so the audit has something to chew on.
+    fn temp_git_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         let git = |args: &[&str]| {
@@ -311,21 +152,78 @@ mod tests {
         std::fs::write(p.join("main.rs"), "fn main() {}\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-q", "-m", "init"]);
+        dir
+    }
 
-        let r = handle(&req(
-            "tools/call",
-            json!(7),
-            json!({
-                "name": "audit",
-                "arguments": { "path": p.to_str().unwrap(), "format": "json" }
-            }),
-        ))
-        .expect("response");
-        assert!(r.get("error").is_none());
-        assert_eq!(r["result"]["isError"], false);
-        let text = r["result"]["content"][0]["text"].as_str().unwrap();
-        // `format: json` → the text payload itself parses as the report.
-        let parsed: Value = serde_json::from_str(text).expect("report is json");
+    #[tokio::test]
+    async fn audit_on_non_git_path_is_tool_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = SlopscopeServer::new();
+        let result = server
+            .audit(Parameters(AuditParams {
+                path: Some(dir.path().to_str().unwrap().to_string()),
+                format: None,
+            }))
+            .await
+            .expect("tool call should not be a protocol error");
+        // Not a git repo → tool result flagged as an error.
+        assert_eq!(result.is_error, Some(true));
+        let text = result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+        assert!(text.contains("audit failed"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn audit_on_real_repo_returns_json_report() {
+        let dir = temp_git_repo();
+        let server = SlopscopeServer::new();
+        let result = server
+            .audit(Parameters(AuditParams {
+                path: Some(dir.path().to_str().unwrap().to_string()),
+                format: Some("json".to_string()),
+            }))
+            .await
+            .expect("tool call");
+        assert_ne!(result.is_error, Some(true));
+        let text = result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+        // format=json → the payload itself parses as the report.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("report is json");
         assert!(parsed["findings"].is_array());
+    }
+
+    #[tokio::test]
+    async fn audit_defaults_to_human_format() {
+        let dir = temp_git_repo();
+        let server = SlopscopeServer::new();
+        let result = server
+            .audit(Parameters(AuditParams {
+                path: Some(dir.path().to_str().unwrap().to_string()),
+                format: None,
+            }))
+            .await
+            .expect("tool call");
+        let text = result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+        // Human report starts with the "slopscope audit —" banner.
+        assert!(text.starts_with("slopscope audit"), "got: {text}");
+    }
+
+    #[test]
+    fn server_info_advertises_tools_and_name() {
+        let server = SlopscopeServer::new();
+        let info = server.get_info();
+        assert!(info.capabilities.tools.is_some());
+        assert_eq!(info.server_info.name, "slopscope");
     }
 }
