@@ -25,15 +25,47 @@ OUT="$ROOT/corpus/wild"
 LOG="$OUT/_pull.log"
 mkdir -p "$OUT"
 
-# Lovable / v0 / bolt produce these tells. Editor copilots (cursor/aider) are
-# deliberately excluded — they tag *commits in any repo*, including healthy
-# ones, which would dilute the signal we're trying to surface.
+# Two families of agent-signature query:
+#
+#   1. Subject-line patterns from no-code generators (Lovable / Bolt / v0).
+#      The author of the repo and the agent are the same; every commit is
+#      agent-produced.
+#
+#   2. Author / coauthor *email and bot-username fingerprints* from coding
+#      agents (Claude Code / Cursor / Devin / Copilot Workspace). These are
+#      weaker — many healthy repos have a handful of agent-coauthored
+#      commits — but they massively widen the net, and the *distribution*
+#      is what the `wild` tier is for. The filter logic below requires the
+#      repo to be active in the last 90 days and have more than one commit,
+#      which prunes the worst noise.
+#
+# Note: GitHub commit-search parses `<word>:<value>` as a search qualifier,
+# so the literal `Co-Authored-By:` trailer can't be used as a query. We
+# search for the bot's email / username instead — equally specific, no
+# qualifier collision.
 QUERIES=(
+  # No-code generators (every commit is agent-produced)
   '"Sync changes" Lovable'
   '"Initial commit by lovable"'
   '"made with bolt"'
   '"Generated with v0"'
+  # Coding-agent fingerprints (bot emails / display names)
+  '"noreply@anthropic.com"'      # Claude Code default email
+  '"cursoragent"'                # Cursor's commit identity
+  '"devin-ai-integration"'       # Devin's GitHub bot username
+  '"copilot-swe-agent"'          # GitHub Copilot Workspace bot
 )
+
+# GitHub commit-search has an aggressive *secondary* rate limit (the
+# documented 30-req/min primary limit is a polite fiction — commit search
+# in particular trips a hidden burst limit much sooner). 3-second pacing
+# wasn't enough; 30s between queries reliably keeps us out of the 403 hole,
+# at the cost of 4 minutes for a full 8-query sweep. Acceptable for a job
+# that runs minutes anyway.
+QUERY_DELAY_SEC=30
+# On 403, wait this much longer and retry once. Most 403s clear quickly;
+# if we're still blocked after a single retry, give up and continue.
+QUERY_RETRY_BACKOFF=90
 
 # Existing corpus repos — never re-pull these.
 seen_owners_and_names() {
@@ -56,13 +88,28 @@ is_already_corpus() {
 candidates_file="$(mktemp)"
 trap 'rm -f "$candidates_file"' EXIT
 
+run_query() {
+  # One attempt at a single search; emits matching fullNames on stdout.
+  # Errors go to the log only — caller decides whether to retry.
+  gh search commits "$1" --limit 100 --json repository \
+    --jq '.[].repository.fullName' 2>>"$LOG"
+}
+
 echo "[pull_wild] querying commit signatures..." | tee -a "$LOG" >&2
+first=1
 for q in "${QUERIES[@]}"; do
+  # Polite delay between queries — GitHub's secondary rate limit kicks in
+  # if we burst these. Skip the delay before the first query.
+  if [ "$first" -eq 0 ]; then
+    sleep "$QUERY_DELAY_SEC"
+  fi
+  first=0
   echo "  $q" | tee -a "$LOG" >&2
-  # gh search commits requires a cloak header; --json takes care of it.
-  gh search commits "$q" --limit 100 --json repository \
-      --jq '.[].repository.fullName' 2>>"$LOG" \
-    || echo "  (query failed; continuing)" | tee -a "$LOG" >&2
+  if ! run_query "$q"; then
+    echo "  (query failed, retrying in ${QUERY_RETRY_BACKOFF}s)" | tee -a "$LOG" >&2
+    sleep "$QUERY_RETRY_BACKOFF"
+    run_query "$q" || echo "  (retry also failed; continuing)" | tee -a "$LOG" >&2
+  fi
 done >> "$candidates_file"
 
 # Dedup and shuffle so the first N isn't always the same repos.
