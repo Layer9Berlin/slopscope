@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Detects slop in AI/vibe-coded codebases via process archaeology — git history + filesystem hygiene."
 license = "MIT"
+repository = "https://github.com/Layer9Berlin/slopscope"
 
 [[bin]]
 name = "slopscope"
@@ -35,3 +36,8 @@ tempfile = "3"
 [profile.release]
 strip = true
 lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

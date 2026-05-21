@@ -16,26 +16,33 @@ code-only analyzers structurally cannot see.
 
 ## Install
 
-From a clone, with a Rust toolchain:
+macOS / Linux:
 
 ```sh
-cargo install --path .
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Layer9Berlin/slopscope/releases/latest/download/slopscope-installer.sh | sh
 ```
 
-Prebuilt binaries for macOS, Linux, and Windows are published on the GitHub
-Releases page (built by the `release` workflow). Download the archive for your
-platform and put the `slopscope` binary on your `PATH`.
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/Layer9Berlin/slopscope/releases/latest/download/slopscope-installer.ps1 | iex
+```
+
+The installer detects your platform and downloads the matching prebuilt
+binary. Per-platform archives are also attached to every
+[release](https://github.com/Layer9Berlin/slopscope/releases).
+
+From source, with a Rust toolchain: `cargo install --path .`.
 
 ## Integrations
 
 slopscope runs as an MCP server (`slopscope mcp`, stdio transport), so any
 MCP-aware agent can call the audit as a tool.
 
-- **Claude Code** — install the bundled plugin. With the repo as a local
-  marketplace:
+- **Claude Code** — install the bundled plugin:
 
   ```
-  /plugin marketplace add /path/to/slopscope
+  /plugin marketplace add Layer9Berlin/slopscope
   /plugin install slopscope@layer9
   ```
 

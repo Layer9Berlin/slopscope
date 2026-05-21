@@ -8,5 +8,7 @@
     "email": "accounts@layer9.berlin"
   },
   "license": "MIT",
+  "homepage": "https://github.com/Layer9Berlin/slopscope",
+  "repository": "https://github.com/Layer9Berlin/slopscope",
   "keywords": ["audit", "code-quality", "mcp", "ai", "vibe-coding"]
 }
