@@ -61,4 +61,4 @@ steering-failure signature) plus the measurement harness.
 
 ## License
 
-TBD (leaning permissive / MIT — this is an open-source reputation project).
+MIT
